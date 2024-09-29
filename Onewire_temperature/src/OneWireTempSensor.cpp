@@ -13,6 +13,7 @@ uint32_t tempStartTime = 0;
 bool OneWireTemperatureStart(void) {
   byte i;
   
+  Serial.print("OneWire: ");
   if (!sensorFound) {
     if (ds.search(sensorAddr)) {
       Serial.print("Sensor found.");
@@ -57,7 +58,7 @@ bool OneWireTemperatureStart(void) {
     return false;
   }
 
-  Serial.println("OneWire: Sending CONVERT T command.");
+  Serial.println("Sending CONVERT T command.");
   ds.reset();
   ds.select(sensorAddr);
   ds.write(0x44, 1);        // start conversion, with parasite power on at the end
@@ -68,16 +69,17 @@ bool OneWireTemperatureStart(void) {
 // Read temperature sensor value.
 // If not enough time has elapsed, wait.
 // If search and convert were not performed yet, will do that first.
-void OneWireTemperatureRead(void) {
+bool OneWireTemperatureRead(void) {
   byte i;
   byte present = 0;
   byte data[9];
   byte dataCRC;
   float celsius;
 
+  Serial.println("OneWire:"); 
   if (!sensorFound) {
     Serial.println("Sensor not available!");
-    return;
+    return false;
   }
 
   // check if enough time has elapsed
@@ -91,7 +93,7 @@ void OneWireTemperatureRead(void) {
 
   // we might do a ds.depower() here, but the reset will take care of it.
   
-  Serial.println("OneWire: Reading data.");
+  Serial.println("Reading data.");
   present = ds.reset();
   ds.select(sensorAddr);    
   ds.write(0xBE);         // Read Scratchpad
@@ -110,7 +112,8 @@ void OneWireTemperatureRead(void) {
 
   if (dataCRC != data[8]) {
       Serial.println(" Data CRC is not valid!");
-      return;
+      sensorFound = false;
+      return false;
   }
 
 
@@ -137,4 +140,5 @@ void OneWireTemperatureRead(void) {
   Serial.print("  Temperature = ");
   Serial.print(celsius);
   Serial.println(" Celsius");
+  return true;
 }
