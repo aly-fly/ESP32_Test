@@ -57,15 +57,7 @@
 #include "FS.h"
 #include "SD.h"
 #include "SPI.h"
-
-/*
-Uncomment and set up if you want to use custom pins for the SPI communication
-#define REASSIGN_PINS
-int sck = -1;
-int miso = -1;
-int mosi = -1;
-*/
-#define PIN_CS_SD 5
+#include "pins_CYD_2432S028.h"
 
 #define SPI_FREQ_SDCARD 20000000  // default 4 MHz; max 25 MHz
 
@@ -186,7 +178,7 @@ void deleteFile(fs::FS &fs, const char *path) {
 
 void testFileIO(fs::FS &fs, const char *path) {
   File file = fs.open(path);
-  static uint8_t buf[512];
+  static uint8_t buf[SPI_DMA_MAX];
   size_t len = 0;
   uint32_t start = millis();
   uint32_t end = start;
@@ -196,8 +188,8 @@ void testFileIO(fs::FS &fs, const char *path) {
     start = millis();
     while (len) {
       size_t toRead = len;
-      if (toRead > 512) {
-        toRead = 512;
+      if (toRead > SPI_DMA_MAX) {
+        toRead = SPI_DMA_MAX;
       }
       file.read(buf, toRead);
       len -= toRead;
@@ -218,12 +210,14 @@ void testFileIO(fs::FS &fs, const char *path) {
   size_t i;
   start = millis();
   for (i = 0; i < 2048; i++) {
-    file.write(buf, 512);
+    file.write(buf, SPI_DMA_MAX);
   }
   end = millis() - start;
-  Serial.printf("%u bytes written in %lu ms\n", 2048 * 512, end);
+  Serial.printf("%u bytes written in %lu ms\n", 2048 * SPI_DMA_MAX, end);
   file.close();
 }
+
+// ===========================================================================================================================
 
 void setup() {
   delay (300);
@@ -232,11 +226,10 @@ void setup() {
     delay(10);
   }
 
-#ifdef REASSIGN_PINS
-  SPI.begin(sck, miso, mosi, PIN_CS_SD);
-#endif
+  // Default = VSPI
+  SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
 
-  if (!SD.begin(PIN_CS_SD, SPI, SPI_FREQ_SDCARD)) {
+  if (!SD.begin(SD_CS, SPI, SPI_FREQ_SDCARD)) {
     Serial.println("Card Mount Failed");
     return;
   }
