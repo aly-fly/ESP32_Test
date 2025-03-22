@@ -1,0 +1,7 @@
+.pio
+.vscode*
+*backup*
+*CONFIG_SECRETS.h
+*.png
+*Thumbs.db
+*.gcode
