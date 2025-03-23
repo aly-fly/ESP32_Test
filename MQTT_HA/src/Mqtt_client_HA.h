@@ -1,7 +1,8 @@
 #ifndef mqtt_client_H_
 #define mqtt_client_H_
 
-#include "_CONFIG.h"
+#include <Arduino.h>
+#include "__CONFIG.h"
 
 #ifdef MQTT_ENABLED
 extern bool MqttConnected;
@@ -25,6 +26,9 @@ extern uint8_t MqttStatusBrightness;
 extern char MqttCommandEffect[24];
 extern bool MqttCommandEffectReceived;
 extern char MqttStatusEffect[24];
+#define NumEffects  4
+extern String Effect[NumEffects];
+extern int MqttCommandEffectNumber;
 
 extern uint32_t MqttCommandColor;
 extern bool MqttCommandColorReceived;
@@ -38,7 +42,7 @@ extern bool MqttCommandDotsReceived;
 extern bool MqttStatusDots;
 
 // read-only statuses
-extern int MqttStatusSignalLevel;
+extern int MqttStatusRssi;
 
 extern int MqttStatusTemperture;
 

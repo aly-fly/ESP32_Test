@@ -1,8 +1,9 @@
 
-#include "_CONFIG.h"
+#include "__CONFIG.h"
 
-#include "Mqtt_client.h"
+#include "Mqtt_client_HA.h"
 #ifdef MQTT_ENABLED
+
 #include "WiFi.h" // for ESP32
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
@@ -36,8 +37,8 @@ bool MqttReportDiscovery();
 
 uint32_t lastTimeSent = (uint32_t)(MQTT_REPORT_STATUS_EVERY_SEC * -1000);
 uint32_t LastTimeTriedToConnect = 0;
-bool MqttConnected = false;
 bool discoveryReported = false;
+bool availabilityReported = false;
 
 // ========== APPLICATION VARIABLES ==========
 
@@ -57,12 +58,15 @@ char MqttCommandEffect[24] = "";
 bool MqttCommandEffectReceived = false;
 char MqttStatusEffect[24] = "";
 char MqttStatusEffectLastSent[24] = "";
+const String Effect[NumEffects] = 
+      {"No effect", "Fixed rainbow", "Travelling full rainbow", "Travelling partial rainbow"};
+int MqttCommandEffectNumber = 0;
 
 uint32_t MqttCommandColor = 0x000000;
 bool MqttCommandColorReceived = false;
 
 #define TopicRainbowSec "rainbow"
-float MqttCommandRainbowSec = -1;
+float MqttCommandRainbowSec = 10;
 bool MqttCommandRainbowSecReceived = false;
 float MqttStatusRainbowSec = 0;
 float MqttStatusRainbowSecLastSent = 0;
@@ -75,17 +79,22 @@ bool MqttStatusDotsLastSent = false;
 
 // read-only statuses
 #define TopicRssi "rssi"
-int MqttStatusSignalLevel = 0;
-int MqttStatusSignalLevelLastSent = 999;
+int MqttStatusRssi = 0;
+int MqttStatusRssiLastSent = 999;
 
 #define TopicTemperature "temperature"
 int MqttStatusTemperture = 0;
 int MqttStatusTempertureLastSent = 999;
 
-#define TopicErrorWarning "errors"
+#define TopicErrorWarning "errorNumber"
 int MqttStatusErrorWarning = 0;
 int MqttStatusErrorWarningLastSent = 999;
 
+/*
+#define TopicErrorWarning "errorText"
+int MqttStatusErrorWarning = 0;
+int MqttStatusErrorWarningLastSent = 999;
+*/
 // ===========================================================
 
 double round1(double value)
@@ -112,7 +121,23 @@ void MqttPublishValues(bool forceUpdateEverything)
     }
 #endif
 
-    if (forceUpdateEverything || MqttStatusPower != MqttStatusPowerLastSent || MqttStatusBrightness != MqttStatusBrightnessLastSent)
+    // send availability message
+    if (forceUpdateEverything || !availabilityReported)
+    {
+      const char *topic = concat3(MQTT_CLIENT, "/", MQTT_ALIVE_TOPIC);
+      if (!MQTTclient.publish(topic, MQTT_ALIVE_MSG_ONLINE, MQTT_RETAIN_ALIVE_MESSAGES))
+        return;
+      availabilityReported = true;
+      Serial.print("TX MQTT: ");
+      Serial.print(topic);
+      Serial.print(" ");
+      Serial.println(MQTT_ALIVE_MSG_ONLINE);
+    }
+
+    if (forceUpdateEverything ||
+        MqttStatusPower != MqttStatusPowerLastSent ||
+        MqttStatusBrightness != MqttStatusBrightnessLastSent ||
+        strcmp(MqttStatusEffect, MqttStatusEffectLastSent) != 0)
     {
       JsonDocument state;
       state["state"] = MqttStatusPower == 0 ? MQTT_STATE_OFF : MQTT_STATE_ON;
@@ -121,11 +146,13 @@ void MqttPublishValues(bool forceUpdateEverything)
 
       char buffer[256];
       serializeJson(state, buffer);
-      const char *topic = concat2(MQTT_CLIENT, concat2("/", TopicLight));
-      if (!MQTTclient.publish(topic, buffer, true))
+      const char *topic = concat3(MQTT_CLIENT, "/", TopicLight);
+      if (!MQTTclient.publish(topic, buffer, MQTT_RETAIN_STATE_MESSAGES))
         return;
       MqttStatusPowerLastSent = MqttStatusPower;
       MqttStatusBrightnessLastSent = MqttStatusBrightness;
+      strncpy(MqttStatusEffectLastSent, MqttStatusEffect, sizeof(MqttStatusEffectLastSent) - 1);
+      MqttStatusEffectLastSent[sizeof(MqttStatusEffectLastSent) - 1] = '\0';
 
       Serial.print("TX MQTT: ");
       Serial.print(topic);
@@ -141,8 +168,8 @@ void MqttPublishValues(bool forceUpdateEverything)
 
       char buffer[256];
       serializeJson(state, buffer);
-      const char *topic = concat2(MQTT_CLIENT, concat2("/", TopicRainbowSec));
-      if (!MQTTclient.publish(topic, buffer, true))
+      const char *topic = concat3(MQTT_CLIENT, "/", TopicRainbowSec);
+      if (!MQTTclient.publish(topic, buffer, MQTT_RETAIN_STATE_MESSAGES))
         return;
       MqttStatusRainbowSecLastSent = MqttStatusRainbowSec;
 
@@ -160,8 +187,8 @@ void MqttPublishValues(bool forceUpdateEverything)
 
       char buffer[256];
       serializeJson(state, buffer);
-      const char *topic = concat2(MQTT_CLIENT, concat2("/", TopicDots));
-      if (!MQTTclient.publish(topic, buffer, true))
+      const char *topic = concat3(MQTT_CLIENT, "/", TopicDots);
+      if (!MQTTclient.publish(topic, buffer, MQTT_RETAIN_STATE_MESSAGES))
         return;
       MqttStatusDotsLastSent = MqttStatusDots;
 
@@ -172,17 +199,17 @@ void MqttPublishValues(bool forceUpdateEverything)
       state.clear();
     }
 
-    if (forceUpdateEverything || (abs(MqttStatusSignalLevel - MqttStatusSignalLevelLastSent) > 6))
+    if (forceUpdateEverything || (abs(MqttStatusRssi - MqttStatusRssiLastSent) > 6))
     {
       JsonDocument state;
-      state["state"] = round1(MqttStatusSignalLevel);
+      state["state"] = round1(MqttStatusRssi);
 
       char buffer[256];
       serializeJson(state, buffer);
-      const char *topic = concat2(MQTT_CLIENT, concat2("/", TopicRssi));
-      if (!MQTTclient.publish(topic, buffer, true))
+      const char *topic = concat3(MQTT_CLIENT, "/", TopicRssi);
+      if (!MQTTclient.publish(topic, buffer, MQTT_RETAIN_STATE_MESSAGES))
         return;
-      MqttStatusSignalLevelLastSent = MqttStatusSignalLevel;
+      MqttStatusRssiLastSent = MqttStatusRssi;
 
       Serial.print("TX MQTT: ");
       Serial.print(topic);
@@ -198,8 +225,8 @@ void MqttPublishValues(bool forceUpdateEverything)
 
       char buffer[256];
       serializeJson(state, buffer);
-      const char *topic = concat2(MQTT_CLIENT, concat2("/", TopicTemperature));
-      if (!MQTTclient.publish(topic, buffer, true))
+      const char *topic = concat3(MQTT_CLIENT, "/", TopicTemperature);
+      if (!MQTTclient.publish(topic, buffer, MQTT_RETAIN_STATE_MESSAGES))
         return;
       MqttStatusTempertureLastSent = MqttStatusTemperture;
 
@@ -217,8 +244,8 @@ void MqttPublishValues(bool forceUpdateEverything)
 
       char buffer[256];
       serializeJson(state, buffer);
-      const char *topic = concat2(MQTT_CLIENT, concat2("/", TopicErrorWarning));
-      if (!MQTTclient.publish(topic, buffer, true))
+      const char *topic = concat3(MQTT_CLIENT, "/", TopicErrorWarning);
+      if (!MQTTclient.publish(topic, buffer, MQTT_RETAIN_STATE_MESSAGES))
         return;
       MqttStatusErrorWarningLastSent = MqttStatusErrorWarning;
 
@@ -247,7 +274,8 @@ void MqttPeriodicReportBackEverything()
 
 // ====================================== DISCOVERY ===================================================
 
-// https://www.home-assistant.io/integrations/mqtt/#supported-abbreviations-in-mqtt-discovery-messages
+// https://www.home-assistant.io/integrations/mqtt/#configuration-via-mqtt-discovery
+// To avoid high IO loads on the MQTT broker, adding some random delay in sending the discovery payload is recommended.
 
 bool MqttReportDiscovery()
 {
@@ -266,6 +294,7 @@ bool MqttReportDiscovery()
   discovery["device"]["connections"][0][1] = WiFi.macAddress();
   discovery["unique_id"] = concat3(MQTT_CLIENT, "_", TopicLight);
   discovery["object_id"] = concat3(MQTT_CLIENT, "_", TopicLight);
+  discovery["availability_topic"] = concat3(MQTT_CLIENT, "/", MQTT_ALIVE_TOPIC);
   discovery["name"] = "Back light";
   discovery["schema"] = "json";
   discovery["state_topic"] = concat3(MQTT_CLIENT, "/", TopicLight);
@@ -275,14 +304,14 @@ bool MqttReportDiscovery()
   discovery["brightness_scale"] = MQTT_BRIGHTNESS_MAX;
   discovery["supported_color_modes"][0] = "rgb";
   discovery["effect"] = true;
-  for (size_t i = 0; i < 5; i++)
+  for (size_t i = 0; i < NumEffects; i++)
   {
-    discovery["effect_list"][i] = String(i);
+    discovery["effect_list"][i] = Effect[i];
   }
   serializeJson(discovery, json_buffer);
   const char *topic1 = concat5("homeassistant/light/", MQTT_CLIENT, "_", TopicLight, "/light/config");
   delay(250);
-  if (!MQTTclient.publish(topic1, json_buffer, true))
+  if (!MQTTclient.publish(topic1, json_buffer, MQTT_RETAIN_DISCOVERY_MESSAGES))
     return false;
   Serial.print("TX MQTT: ");
   Serial.print(topic1);
@@ -301,7 +330,7 @@ bool MqttReportDiscovery()
   discovery["device"]["connections"][0][1] = WiFi.macAddress();
   discovery["unique_id"] = concat3(MQTT_CLIENT, "_", TopicRainbowSec);
   discovery["object_id"] = concat3(MQTT_CLIENT, "_", TopicRainbowSec);
-  // discovery["entity_category"] = "control";
+  discovery["availability_topic"] = concat3(MQTT_CLIENT, "/", MQTT_ALIVE_TOPIC);
   discovery["name"] = "Rainbow, sec";
   discovery["state_topic"] = concat3(MQTT_CLIENT, "/", TopicRainbowSec);
   discovery["json_attributes_topic"] = concat3(MQTT_CLIENT, "/", TopicRainbowSec);
@@ -315,7 +344,7 @@ bool MqttReportDiscovery()
   serializeJson(discovery, json_buffer);
   const char *topic2 = concat5("homeassistant/number/", MQTT_CLIENT, "_", TopicRainbowSec, "/number/config");
   delay(250);
-  if (!MQTTclient.publish(topic2, json_buffer, true))
+  if (!MQTTclient.publish(topic2, json_buffer, MQTT_RETAIN_DISCOVERY_MESSAGES))
     return false;
   Serial.print("TX MQTT: ");
   Serial.print(topic2);
@@ -334,7 +363,7 @@ bool MqttReportDiscovery()
   discovery["device"]["connections"][0][1] = WiFi.macAddress();
   discovery["unique_id"] = concat3(MQTT_CLIENT, "_", TopicDots);
   discovery["object_id"] = concat3(MQTT_CLIENT, "_", TopicDots);
-  // discovery["entity_category"] = "control";
+  discovery["availability_topic"] = concat3(MQTT_CLIENT, "/", MQTT_ALIVE_TOPIC);
   discovery["name"] = "Show dots";
   discovery["state_topic"] = concat3(MQTT_CLIENT, "/", TopicDots);
   discovery["json_attributes_topic"] = concat3(MQTT_CLIENT, "/", TopicDots);
@@ -347,7 +376,7 @@ bool MqttReportDiscovery()
   serializeJson(discovery, json_buffer);
   const char *topic3 = concat5("homeassistant/switch/", MQTT_CLIENT, "_", TopicDots, "/switch/config");
   delay(250);
-  if (!MQTTclient.publish(topic3, json_buffer, true))
+  if (!MQTTclient.publish(topic3, json_buffer, MQTT_RETAIN_DISCOVERY_MESSAGES))
     return false;
   Serial.print("TX MQTT: ");
   Serial.print(topic3);
@@ -366,6 +395,7 @@ bool MqttReportDiscovery()
   discovery["device"]["connections"][0][1] = WiFi.macAddress();
   discovery["unique_id"] = concat3(MQTT_CLIENT, "_", TopicRssi);
   discovery["object_id"] = concat3(MQTT_CLIENT, "_", TopicRssi);
+  discovery["availability_topic"] = concat3(MQTT_CLIENT, "/", MQTT_ALIVE_TOPIC);
   discovery["name"] = "RSSI";
   discovery["state_topic"] = concat3(MQTT_CLIENT, "/", TopicRssi);
   discovery["json_attributes_topic"] = concat3(MQTT_CLIENT, "/", TopicRssi);
@@ -374,7 +404,7 @@ bool MqttReportDiscovery()
   serializeJson(discovery, json_buffer);
   const char *topic4 = concat5("homeassistant/sensor/", MQTT_CLIENT, "_", TopicRssi, "/sensor/config");
   delay(250);
-  if (!MQTTclient.publish(topic4, json_buffer, true))
+  if (!MQTTclient.publish(topic4, json_buffer, MQTT_RETAIN_DISCOVERY_MESSAGES))
     return false;
   Serial.print("TX MQTT: ");
   Serial.print(topic4);
@@ -393,6 +423,7 @@ bool MqttReportDiscovery()
   discovery["device"]["connections"][0][1] = WiFi.macAddress();
   discovery["unique_id"] = concat3(MQTT_CLIENT, "_", TopicTemperature);
   discovery["object_id"] = concat3(MQTT_CLIENT, "_", TopicTemperature);
+  discovery["availability_topic"] = concat3(MQTT_CLIENT, "/", MQTT_ALIVE_TOPIC);
   discovery["name"] = "Motor temperature";
   discovery["state_topic"] = concat3(MQTT_CLIENT, "/", TopicTemperature);
   discovery["json_attributes_topic"] = concat3(MQTT_CLIENT, "/", TopicTemperature);
@@ -401,7 +432,7 @@ bool MqttReportDiscovery()
   serializeJson(discovery, json_buffer);
   const char *topic5 = concat5("homeassistant/sensor/", MQTT_CLIENT, "_", TopicTemperature, "/sensor/config");
   delay(250);
-  if (!MQTTclient.publish(topic5, json_buffer, true))
+  if (!MQTTclient.publish(topic5, json_buffer, MQTT_RETAIN_DISCOVERY_MESSAGES))
     return false;
   Serial.print("TX MQTT: ");
   Serial.print(topic5);
@@ -420,15 +451,16 @@ bool MqttReportDiscovery()
   discovery["device"]["connections"][0][1] = WiFi.macAddress();
   discovery["unique_id"] = concat3(MQTT_CLIENT, "_", TopicErrorWarning);
   discovery["object_id"] = concat3(MQTT_CLIENT, "_", TopicErrorWarning);
+  discovery["availability_topic"] = concat3(MQTT_CLIENT, "/", MQTT_ALIVE_TOPIC);
   discovery["name"] = "Error status";
   discovery["state_topic"] = concat3(MQTT_CLIENT, "/", TopicErrorWarning);
   discovery["json_attributes_topic"] = concat3(MQTT_CLIENT, "/", TopicErrorWarning);
   discovery["value_template"] = "{{ value_json.state }}";
-  //discovery["unit_of_measurement"] = "";
+  // discovery["unit_of_measurement"] = "";
   serializeJson(discovery, json_buffer);
   const char *topic6 = concat5("homeassistant/sensor/", MQTT_CLIENT, "_", TopicErrorWarning, "/sensor/config");
   delay(250);
-  if (!MQTTclient.publish(topic6, json_buffer, true))
+  if (!MQTTclient.publish(topic6, json_buffer, MQTT_RETAIN_DISCOVERY_MESSAGES))
     return false;
   Serial.print("TX MQTT: ");
   Serial.print(topic6);
@@ -491,7 +523,6 @@ bool loadCARootCert()
 void MqttStart()
 {
 #ifdef MQTT_ENABLED
-  MqttConnected = false;
   if (((millis() - LastTimeTriedToConnect) > (MQTT_RECONNECT_WAIT_SEC * 1000)) || (LastTimeTriedToConnect == 0))
   {
     LastTimeTriedToConnect = millis();
@@ -509,10 +540,16 @@ void MqttStart()
 
     Serial.println("");
     Serial.println("Connecting to MQTT...");
-    if (MQTTclient.connect(MQTT_CLIENT, MQTT_USERNAME, MQTT_PASSWORD))
+
+    if (MQTTclient.connect(MQTT_CLIENT,
+                           MQTT_USERNAME,
+                           MQTT_PASSWORD,
+                           concat3(MQTT_CLIENT, "/", MQTT_ALIVE_TOPIC), // LWT topic
+                           0,                                           // LWT QoS
+                           MQTT_RETAIN_ALIVE_MESSAGES,                  // retain
+                           MQTT_ALIVE_MSG_OFFLINE))                     // LWT message to be sent by the Broker when device goes offline
     {
       Serial.println("MQTT connected");
-      MqttConnected = true;
     }
     else
     {
@@ -541,6 +578,7 @@ void MqttStart()
     const char *topic3 = concat4(MQTT_CLIENT, "/", TopicDots, "/set");
     MQTTclient.subscribe(topic3);
 
+    // Home Assistant sends "online" and "offline" to "homeassistant/status" when being shut down or restarted.
     MQTTclient.subscribe(TopicHAstatus);
   }
 #endif
@@ -571,8 +609,7 @@ int splitCommand(char *topic, char *tokens[], int tokensNumber)
 
 void checkMqtt()
 {
-  MqttConnected = MQTTclient.connected();
-  if (!MqttConnected)
+  if (!MQTTclient.connected())
   {
     MqttStart();
   }
@@ -608,6 +645,7 @@ void callback(char *topic, byte *payload, unsigned int length)
   if (strcmp(topic, TopicHAstatus) == 0 && strcmp(message, "online") == 0)
   {
     discoveryReported = false;
+    availabilityReported = false;
     Serial.println("HA was restarted. Resending discovery messages.");
   }
 
@@ -628,8 +666,19 @@ void callback(char *topic, byte *payload, unsigned int length)
     }
     if (doc["effect"].is<const char *>())
     {
-      // MqttCommandEffect = doc["effect"];
+      strncpy(MqttCommandEffect, doc["effect"], sizeof(MqttCommandEffect) - 1);
+      MqttCommandEffect[sizeof(MqttCommandEffect) - 1] = '\0';
       MqttCommandEffectReceived = true;
+
+      // find the number of the effect
+      for (int8_t i = 0; i < NumEffects; i++)
+      {
+        if (strcmp(MqttCommandEffect, (Effect[i]).c_str()) == 0)
+        {
+          MqttCommandEffectNumber = i;
+          break;
+        }
+      }
     }
 
     // RX MQTT: test02/back/set {"state":"ON","color":{"r":255,"g":114,"b":152}}
@@ -641,6 +690,10 @@ void callback(char *topic, byte *payload, unsigned int length)
       MqttCommandColor = (r << 16) | (g << 8) | (b);
       Serial.printf("RGB = %d, %d, %d\r\n", r, g, b);
       MqttCommandColorReceived = true;
+      // request for fixed color -> disable effects
+      MqttCommandEffectNumber = 0;
+      strncpy(MqttStatusEffect, Effect[MqttCommandEffectNumber].c_str(), sizeof(MqttStatusEffect) - 1);
+      MqttStatusEffect[sizeof(MqttStatusEffect) - 1] = '\0';
     }
     doc.clear();
   }
@@ -683,8 +736,8 @@ void MqttLoopFrequently()
 void MqttLoopInFreeTime()
 {
 #ifdef MQTT_ENABLED
-  MqttReportBackOnChange();
   MqttPeriodicReportBackEverything();
+  MqttReportBackOnChange();
 #endif
 }
 

@@ -3,10 +3,15 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include "myWiFi.h"
-#include "_CONFIG.h"
+#include "__CONFIG.h"
 #ifdef MQTT_ENABLED
 #include "Mqtt_client_HA.h"
 #endif
+// #include "LED_builtin.h"
+#include <FastLED.h>
+
+CRGB leds[1];
+
 
 void setup()
 {
@@ -18,6 +23,12 @@ void setup()
   }
   Serial.println();
 
+  // LEDbuiltin_init();
+  // LEDbuiltin_ON();
+  FastLED.addLeds<NEOPIXEL, WS2812_LED_PIN>(leds, 1);
+  leds[0] = CRGB::DarkOrange;
+  FastLED.show();
+
   WifiInit();
 
 #ifdef MQTT_ENABLED
@@ -26,6 +37,13 @@ void setup()
   Serial.println("MQTT start Done!");
 #endif
 
+  // LEDbuiltin_OFF();
+  FastLED.addLeds<NEOPIXEL, WS2812_LED_PIN>(leds, 1);
+  leds[0] = CRGB::Navy;
+  FastLED.show();
+
+  MqttCommandColor = 0xFFFFFF;
+
   Serial.println("INIT FINISHED.");
 }
 
@@ -33,10 +51,10 @@ void setup()
 
 unsigned long lastMqttCommandExecuted = -1;
 bool MqttCommandReceived = false;
+uint32_t LEDcolor;
 
 void loop()
 {
-
 
 #ifdef MQTT_ENABLED
   MqttLoopFrequently();
@@ -61,6 +79,12 @@ void loop()
     Serial.printf("CMD: RGB = %6X\r\n", MqttCommandColor);
     MqttCommandReceived = true;
   }
+  if (MqttCommandEffectReceived)
+  {
+    MqttCommandEffectReceived = false;
+    Serial.printf("CMD: Effect = %d (%s)\r\n", MqttCommandEffectNumber, MqttCommandEffect);
+    MqttCommandReceived = true;
+  }
   if (MqttCommandRainbowSecReceived)
   {
     MqttCommandRainbowSecReceived = false;
@@ -78,6 +102,26 @@ void loop()
   {
     MqttStatusTemperture = random(0, 50);
     lastMqttCommandExecuted = millis();
+
+    if (MqttCommandPower)
+    {
+      LEDcolor = MqttCommandColor;
+      FastLED.setBrightness(MqttCommandBrightness);
+      // adjustBrightness(&LEDcolor, MqttCommandBrightness);
+    }
+    else
+    {
+      LEDcolor = 0;
+    }
+    leds[0] = LEDcolor;
+    FastLED.show();
+
+    /*
+    if (MqttCommandDots)
+      LEDbuiltin_ON();
+    else
+      LEDbuiltin_OFF();
+    */
   }
 
   if (lastMqttCommandExecuted != -1)
@@ -93,13 +137,14 @@ void loop()
   }
 #endif
 
-
-MqttStatusBrightness = MqttCommandBrightness;
-MqttStatusPower = MqttCommandPower;
-MqttStatusRainbowSec = MqttCommandRainbowSec;
-MqttStatusDots = MqttCommandDots;
-MqttStatusRssi = WifiGetSignalLevel();
-//  MqttStatusTemperture = random(0, 50);
+  MqttStatusBrightness = MqttCommandBrightness;
+  MqttStatusPower = MqttCommandPower;
+  strncpy(MqttStatusEffect, Effect[MqttCommandEffectNumber].c_str(), sizeof(MqttStatusEffect) - 1);
+  MqttStatusEffect[sizeof(MqttStatusEffect) - 1] = '\0';
+  MqttStatusRainbowSec = MqttCommandRainbowSec;
+  MqttStatusDots = MqttCommandDots;
+  MqttStatusRssi = WifiGetSignalLevel();
+  //  MqttStatusTemperture = random(0, 50);
 
 #ifdef MQTT_ENABLED
   MqttLoopInFreeTime();
