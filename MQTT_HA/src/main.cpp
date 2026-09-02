@@ -38,7 +38,6 @@ void setup()
 #endif
 
   // LEDbuiltin_OFF();
-  FastLED.addLeds<NEOPIXEL, WS2812_LED_PIN>(leds, 1);
   leds[0] = CRGB::Navy;
   FastLED.show();
 
